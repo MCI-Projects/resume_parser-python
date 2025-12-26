@@ -1,6 +1,6 @@
 import os
 import re
-import uuid
+import random
 from fastapi import FastAPI, UploadFile, File
 from supabase import create_client
 
@@ -79,7 +79,8 @@ async def upload_resume(resume: UploadFile = File(...)):
 
     # Upload file to Supabase
     resume.file.seek(0)
-    filename = f"{uuid.uuid4()}_{resume.filename}"
+    prefix = str(random.randint(100000, 999999))  # 6-digit random number
+    filename = f"{prefix}_{resume.filename}"
     supabase.storage.from_("resumes").upload(filename, resume.file.read())
 
     # Parse real data
