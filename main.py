@@ -1,90 +1,95 @@
 import os
 import re
+import uuid
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import pdfplumber
-import docx
 from supabase import create_client
 
-# Supabase config
+# Supabase config using environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-app = FastAPI()
+app = FastAPI(title="Resume Parser API")
 
-# Enable CORS so your widget/HTML can call this
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Replace with your domain if needed
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ----------- Helper Functions -----------
+def extract_name(text):
+    lines = text.split("\n")
+    for line in lines:
+        if len(line.split()) in [2,3] and all(w[0].isupper() for w in line.split()):
+            return line.strip()
+    return "Not found"
 
+def extract_email(text):
+    match = re.search(r"[\w\.-]+@[\w\.-]+", text)
+    return match.group(0) if match else "Not found"
+
+def extract_phone(text):
+    match = re.search(r"(\+?\d{1,3}[-.\s]?)?(\d{6,12})", text)
+    return match.group(0) if match else "Not found"
+
+def extract_education(text):
+    edu_list = []
+    degrees = ["B.Tech", "BE", "M.Tech", "ME", "MBA", "B.Sc", "M.Sc"]
+    lines = text.split("\n")
+    for line in lines:
+        for deg in degrees:
+            if deg in line:
+                year_match = re.search(r"\b(19|20)\d{2}\b", line)
+                edu_list.append({
+                    "Degree": deg,
+                    "Year": year_match.group(0) if year_match else ""
+                })
+    return edu_list
+
+def extract_experience(text):
+    exp_list = []
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if "Company" in line or "Experience" in line:
+            company = line.split(":")[-1].strip() if ":" in line else line
+            years = "1"
+            for j in range(i+1, min(i+4, len(lines))):
+                y = re.search(r"(\d+)\s*years?", lines[j], re.I)
+                if y:
+                    years = y.group(1)
+                    break
+            exp_list.append({"Company": company, "Years": years})
+    return exp_list
+
+# ----------- API Endpoint -----------
 @app.post("/upload")
 async def upload_resume(resume: UploadFile = File(...)):
-    try:
-        # Extract text
-        text = ""
-        resume.file.seek(0)
-        if resume.filename.endswith(".pdf"):
-            with pdfplumber.open(resume.file) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-        elif resume.filename.endswith(".docx"):
-            resume.file.seek(0)
-            doc = docx.Document(resume.file)
-            text = "\n".join([p.text for p in doc.paragraphs])
-        else:
-            return JSONResponse({"error": "Only PDF and DOCX files are allowed"}, status_code=400)
+    text = ""
 
-        # Upload file to Supabase
-        resume.file.seek(0)
-        supabase.storage.from_("resumes").upload(resume.filename, resume.file.read())
+    # Extract text from PDF
+    if resume.filename.endswith(".pdf"):
+        import pdfplumber
+        with pdfplumber.open(resume.file) as pdf:
+            for page in pdf.pages:
+                text += page.extract_text() or ""
+    
+    # Extract text from DOCX
+    elif resume.filename.endswith(".docx"):
+        import docx
+        doc = docx.Document(resume.file)
+        text = "\n".join([p.text for p in doc.paragraphs])
+    
+    else:
+        return {"error": "Only PDF and DOCX files are allowed"}
 
-        # Parse Name (assume first line)
-        lines = text.strip().split("\n")
-        name = lines[0].strip() if lines else ""
+    # Upload file to Supabase
+    resume.file.seek(0)
+    filename = f"{uuid.uuid4()}_{resume.filename}"
+    supabase.storage.from_("resumes").upload(filename, resume.file.read())
 
-        # Parse Email
-        email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", text)
-        email = email_match.group(0) if email_match else ""
+    # Parse real data
+    data = {
+        "Name": extract_name(text),
+        "Email": extract_email(text),
+        "Phone": extract_phone(text),
+        "Education_Subform": extract_education(text),
+        "WorkExperience_Subform": extract_experience(text),
+        "Resume_File": filename
+    }
 
-        # Parse Phone (simple international format)
-        phone_match = re.search(r"\+?\d[\d\s\-]{7,}\d", text)
-        phone = phone_match.group(0) if phone_match else ""
-
-        # Parse Education
-        education = []
-        for line in text.split("\n"):
-            if re.search(r"(B\.Tech|M\.Tech|B\.Sc|M\.Sc|MBA|BA|MA)", line):
-                year_match = re.search(r"\b(19|20)\d{2}\b", line)
-                year = year_match.group(0) if year_match else ""
-                education.append({"Degree": line.strip(), "Year": year})
-
-        # Parse Work Experience
-        work_experience = []
-        for line in text.split("\n"):
-            if re.search(r"(at\s[A-Z][a-zA-Z]+|Inc|Corp|LLC)", line):
-                years_match = re.search(r"\b\d+\s?(years|yrs)\b", line.lower())
-                years = years_match.group(0) if years_match else ""
-                work_experience.append({"Company": line.strip(), "Years": years})
-
-        # Return parsed data
-        data = {
-            "Name": name,
-            "Email": email,
-            "Phone": phone,
-            "Education_Subform": education,
-            "WorkExperience_Subform": work_experience
-        }
-
-        return JSONResponse(content=data)
-
-    except Exception as e:
-        print(e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return data
