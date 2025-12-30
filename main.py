@@ -2,7 +2,7 @@ import re
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Resume Parser API - Phase 2")
+app = FastAPI(title="Resume Parser API - Phase 3")
 
 # Allow all origins (you can restrict later)
 app.add_middleware(
@@ -77,6 +77,33 @@ def extract_skills(text):
     )
     return ", ".join(set(skills)) if skills else ""
 
+def extract_education(text):
+    education_entries = []
+    # Try to locate "Education" section
+    edu_section = re.findall(r"(Education[\s\S]{0,500})", text, re.IGNORECASE)
+    if edu_section:
+        lines = edu_section[0].split("\n")
+    else:
+        lines = text.split("\n")
+
+    for line in lines:
+        if not line.strip():
+            continue
+        # Example: "B.Sc Computer Science, XYZ University, 2015 - 2019"
+        match = re.match(
+            r"(?P<qualification>[A-Za-z\.\s]+)\s*(?P<major>[A-Za-z\s]*)?,?\s*(?P<institute>[A-Za-z\s&]+)?[, ]*(?P<from>\d{4})?\s*[-–]\s*(?P<to>\d{4})?",
+            line.strip(),
+        )
+        if match:
+            education_entries.append({
+                "Qualification": (match.group("qualification") or "").strip(),
+                "Major_Department": (match.group("major") or "").strip(),
+                "Institute_School": (match.group("institute") or "").strip(),
+                "From": (match.group("from") or "").strip(),
+                "To": (match.group("to") or "").strip(),
+            })
+    return education_entries
+
 # ---------- API ----------
 
 @app.post("/upload")
@@ -107,7 +134,8 @@ async def upload_resume(resume: UploadFile = File(...)):
             "Nationality": "",
             "NoticePeriod": "",
             "Race": "",
-            "Skills": ""
+            "Skills": "",
+            "Education": []
         }
 
     # 🔑 RETURN JSON
@@ -122,4 +150,5 @@ async def upload_resume(resume: UploadFile = File(...)):
         "NoticePeriod": extract_notice_period(text),
         "Race": extract_race(text),
         "Skills": extract_skills(text),
+        "Education": extract_education(text)
     }
