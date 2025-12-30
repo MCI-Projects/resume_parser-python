@@ -2,7 +2,7 @@ import re
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Resume Parser API - Full Version")
+app = FastAPI(title="Resume Parser API - Full Version with Top 3")
 
 # Allow all origins (you can restrict later)
 app.add_middleware(
@@ -97,7 +97,7 @@ def extract_education(text):
         if match:
             education_entries.append({
                 "Qualification": (match.group("qualification") or "").strip(),
-                "Major_Department": "",  # optional refinement
+                "Major_Department": "",
                 "Institute_School": (match.group("institute") or "").strip(),
                 "From": (match.group("from") or "").strip(),
                 "To": (match.group("to") or "").strip(),
@@ -114,7 +114,6 @@ def extract_work_experience(text):
         if not line.strip():
             continue
 
-        # Match job line: "Human Resources Assistant Jan 2024 – Present"
         job_match = re.match(
             r"(?P<title>[A-Za-z\s/&]+)\s+(?P<from>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?\s*\d{4})"
             r"\s*[-–]\s*(?P<to>(?:Present|\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?\s*\d{4}))?",
@@ -137,7 +136,6 @@ def extract_work_experience(text):
             }
             continue
 
-        # Company line (usually above job title)
         if "PTE LTD" in line or "SDN BHD" in line or "Company" in line or "Services" in line:
             if current_entry and not current_entry.get("Company"):
                 current_entry["Company"] = line.strip()
@@ -152,13 +150,11 @@ def extract_work_experience(text):
                 }
             continue
 
-        # Reason for leaving
         reason_match = re.search(r"Reason\s*for\s*Leaving:\s*(.*)", line, re.IGNORECASE)
         if reason_match and current_entry:
             current_entry["Reason_For_Leaving"] = reason_match.group(1).strip()
             continue
 
-        # Description (bullet points)
         if current_entry:
             current_entry["Description"] += " " + line.strip()
 
@@ -173,14 +169,12 @@ def extract_work_experience(text):
 async def upload_resume(resume: UploadFile = File(...)):
     text = ""
 
-    # PDF
     if resume.filename.lower().endswith(".pdf"):
         import pdfplumber
         with pdfplumber.open(resume.file) as pdf:
             for page in pdf.pages:
                 text += page.extract_text() or ""
 
-    # DOCX
     elif resume.filename.lower().endswith(".docx"):
         import docx
         doc = docx.Document(resume.file)
@@ -202,7 +196,9 @@ async def upload_resume(resume: UploadFile = File(...)):
             "WorkExperience": []
         }
 
-    # 🔑 RETURN JSON
+    education = extract_education(text)
+    work_experience = extract_work_experience(text)
+
     return {
         "Name": extract_name(text),
         "Email": extract_email(text),
@@ -214,6 +210,6 @@ async def upload_resume(resume: UploadFile = File(...)):
         "NoticePeriod": extract_notice_period(text),
         "Race": extract_race(text),
         "Skills": extract_skills(text),
-        "Education": extract_education(text),
-        "WorkExperience": extract_work_experience(text)
+        "Education": education[:3],        # only top 3
+        "WorkExperience": work_experience[:3]  # only top 3
     }
