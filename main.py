@@ -57,7 +57,7 @@ def extract_language(text: str) -> str:
     if m:
         return m.group(1).strip()
     langs = re.findall(r"\b(English|Malay|Tamil|Mandarin|Hindi|French|Spanish|German)\b", text, re.IGNORECASE)
-    return ", ".join(dict.fromkeys(w.upper() for w in langs)) if langs else ""
+    return ", ".join(dict.fromkeys(w.capitalize() for w in langs)) if langs else ""
 
 def extract_nationality(text: str) -> str:
     m = re.search(r"Nationality\s*[:\-]\s*(.+)", text, re.IGNORECASE)
@@ -84,28 +84,28 @@ def extract_skills(text: str) -> str:
 def extract_education(text: str) -> List[Dict[str, str]]:
     lines = split_lines(text)
     entries = []
-    for i, l in enumerate(lines):
-        if re.search(r"(Bachelor|Diploma|Degree|Certificate)", l, re.IGNORECASE):
-            qual = l
+    for i, line in enumerate(lines):
+        # Detect qualification
+        if re.search(r"(Bachelor|Diploma|Degree|Certificate)", line, re.IGNORECASE):
+            qual = re.sub(r"\s+", " ", line.strip())
             inst = ""
             from_, to_ = "", ""
             # Look back for institution
-            if i > 0 and re.search(r"(University|Academy|Institute|College|Polytechnic|School)", lines[i-1], re.IGNORECASE):
-                inst = lines[i-1]
+            if i > 0 and re.search(r"(University|Academy|Institute|College|Polytechnic|School|NTUC)", lines[i-1], re.IGNORECASE):
+                inst = re.sub(r"\s+", " ", lines[i-1].strip())
             # Look ahead for dates
-            if i+1 < len(lines) and re.search(rf"{DATE_RANGE}", lines[i+1], re.IGNORECASE):
-                dates = lines[i+1]
-                rm = re.match(rf"(?P<from>{MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*(?P<to>{MONTHS}\s+\d{{4}}|Present|\d{{4}})", dates, re.IGNORECASE)
-                if rm:
-                    from_, to_ = rm.group("from") or "", rm.group("to") or ""
+            if i + 1 < len(lines):
+                m = re.search(rf"({MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*({MONTHS}\s+\d{{4}}|Present|\d{{4}})", lines[i+1])
+                if m:
+                    from_, to_ = m.group(1), m.group(2)
             entries.append({
                 "Qualification": qual,
                 "Major_Department": "",
                 "Institute_School": inst,
                 "From": from_,
-                "To": to_,
+                "To": to_
             })
-    return entries
+    return entries[:3]  # top 3
 
 # ------------------------ Work Experience ------------------------
 
@@ -113,18 +113,18 @@ def extract_work_experience(text: str) -> List[Dict[str, str]]:
     lines = split_lines(text)
     entries = []
     current = None
-    for l in lines:
-        # Company line
-        if re.search(r"(PTE LTD|SDN BHD|GROUP|COMPANY|INC|LTD)", l, re.IGNORECASE):
+
+    for line in lines:
+        l = re.sub(r"\s+", " ", line.strip())
+        # Detect company
+        if re.search(r"(PTE LTD|SDN BHD|GROUP|COMPANY|INC|LTD|NTUC|Academy|Consulting|Management|Talent)", l, re.IGNORECASE):
             if current:
                 entries.append(current)
             current = {"Company": l, "Occupation_Job_Title": "", "From": "", "To": "", "Reason_For_Leaving": "", "Description": ""}
             continue
-        # Title + dates inline
-        m = re.match(r"(?P<title>[A-Za-z\s/&]+)\s+(?P<from>{MONTHS}\s+\d{4}|\d{4})\s*[-–]\s*(?P<to>{MONTHS}\s+\d{4}|Present|\d{4})", l, re.IGNORECASE)
-        if m:
-            if not current:
-                current = {"Company": "", "Occupation_Job_Title": "", "From": "", "To": "", "Reason_For_Leaving": "", "Description": ""}
+        # Job title + dates
+        m = re.match(r"(?P<title>[A-Za-z\s/&]+)\s+((?P<from>{MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*(?P<to>{MONTHS}\s+\d{{4}}|Present|\d{{4}}))", l)
+        if m and current:
             current["Occupation_Job_Title"] = m.group("title").strip()
             current["From"] = m.group("from").strip()
             current["To"] = m.group("to").strip()
@@ -136,12 +136,14 @@ def extract_work_experience(text: str) -> List[Dict[str, str]]:
             continue
         # Description
         if current:
-            desc = re.sub(r"^[\-\.\*•●·]\s*", "", l).strip()
-            if desc:
-                current["Description"] += " " + desc
+            if current["Description"]:
+                current["Description"] += " " + l
+            else:
+                current["Description"] = l
+
     if current:
         entries.append(current)
-    return entries
+    return entries[:3]  # top 3
 
 # ------------------------ API ------------------------
 
@@ -158,7 +160,11 @@ async def upload_resume(resume: UploadFile = File(...)):
         doc = docx.Document(resume.file)
         text = "\n".join(p.text for p in doc.paragraphs)
     else:
-        return {"Name": "", "Email": "", "Mobile": "", "Date_of_Birth": "", "Gender": "", "Language": "", "Nationality": "", "NoticePeriod": "", "Race": "", "Skills": "", "Education": [], "WorkExperience": []}
+        return {
+            "Name": "", "Email": "", "Mobile": "", "Date_of_Birth": "", "Gender": "",
+            "Language": "", "Nationality": "", "NoticePeriod": "", "Race": "",
+            "Skills": "", "Education": [], "WorkExperience": []
+        }
 
     text = clean_text(text)
     education = extract_education(text)
@@ -175,6 +181,6 @@ async def upload_resume(resume: UploadFile = File(...)):
         "NoticePeriod": extract_notice_period(text),
         "Race": extract_race(text),
         "Skills": extract_skills(text),
-        "Education": education[:3],           # top 3
-        "WorkExperience": work_experience[:3] # top 3
+        "Education": education,
+        "WorkExperience": work_experience
     }
