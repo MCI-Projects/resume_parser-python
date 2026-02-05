@@ -3,7 +3,7 @@ from typing import List, Dict
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Resume Parser API - Name Fix + Top 3")
+app = FastAPI(title="Resume Parser API - Full Extraction")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,7 +14,8 @@ app.add_middleware(
 
 # ------------------------ Utilities ------------------------
 
-MONTHS = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)"
+MONTHS = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|" \
+         r"January|February|March|April|May|June|July|August|September|October|November|December)"
 DATE_RANGE = rf"(?:{MONTHS}\s+\d{{4}}|\d{{4}})(?:\s*[-–]\s*(?:{MONTHS}\s+\d{{4}}|Present|\d{{4}}))?"
 
 def clean_text(text: str) -> str:
@@ -25,7 +26,7 @@ def clean_text(text: str) -> str:
 def split_lines(text: str) -> List[str]:
     return [l.strip() for l in text.split("\n") if l.strip()]
 
-# ------------------------ Extraction helpers ------------------------
+# ------------------------ Field Extractors ------------------------
 
 def extract_name(text: str) -> str:
     lines = split_lines(text)
@@ -81,80 +82,47 @@ def extract_skills(text: str) -> str:
 
 # ------------------------ Education ------------------------
 
-def extract_education(text: str) -> List[Dict[str, str]]:
-    lines = split_lines(text)
+def extract_education(lines: List[str]) -> List[Dict[str, str]]:
     entries = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if re.search(r"(Bachelor|Diploma|Degree|Certificate)", line, re.IGNORECASE):
-            qual = line
-            inst, from_, to_ = "", "", ""
-            # Look backward for institution
-            if i > 0:
-                prev = lines[i-1]
-                if re.search(r"(University|Academy|Institute|College|Polytechnic|School|NTUC LearningHub)", prev, re.IGNORECASE):
-                    inst = prev
-            # Look forward for dates
-            for j in range(i+1, min(i+3, len(lines))):
-                m = re.search(rf"({MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*({MONTHS}\s+\d{{4}}|Present|\d{{4}})", lines[j])
-                if m:
-                    from_, to_ = m.group(1), m.group(2)
-                    break
+    for i, line in enumerate(lines):
+        if re.search(r"(Bachelor|Diploma|Degree|Certificate|Certification)", line, re.IGNORECASE):
+            inst = ""
+            if i > 0 and re.search(r"(University|Academy|Institute|College|Polytechnic|School|NTUC LearningHub)", lines[i-1], re.IGNORECASE):
+                inst = lines[i-1]
             entries.append({
-                "Qualification": qual,
+                "Qualification": line,
                 "Major_Department": "",
                 "Institute_School": inst,
-                "From": from_,
-                "To": to_,
+                "From": "",
+                "To": ""
             })
-        i += 1
     return entries
 
 # ------------------------ Work Experience ------------------------
 
-def extract_work_experience(text: str) -> List[Dict[str, str]]:
-    lines = split_lines(text)
+def extract_work_experience(lines: List[str]) -> List[Dict[str, str]]:
     entries = []
     current = None
-
-    for i, l in enumerate(lines):
-        # Match Job Title + Company patterns
-        m = re.match(r"(?P<title>[A-Za-z &/]+)\s+[-–]?\s*(?P<company>[A-Za-z &]+)$", l)
-        if m:
+    for i, line in enumerate(lines):
+        # Match lines with a date range
+        m_date = re.search(rf"({MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*({MONTHS}\s+\d{{4}}|Present|\d{{4}})", line)
+        if m_date:
             if current:
                 entries.append(current)
+            prev = lines[i-1].strip() if i > 0 else ""
             current = {
-                "Company": m.group("company").strip(),
-                "Occupation_Job_Title": m.group("title").strip(),
-                "From": "",
-                "To": "",
+                "Company": prev if len(prev) < 50 else "",
+                "Occupation_Job_Title": prev if len(prev) < 50 else line,
+                "From": m_date.group(1),
+                "To": m_date.group(2),
                 "Reason_For_Leaving": "",
                 "Description": ""
             }
-            continue
-
-        # Match Dates
-        m_dates = re.match(rf"({MONTHS}\s+\d{{4}}|\d{{4}})\s*[-–]\s*({MONTHS}\s+\d{{4}}|Present|\d{{4}})", l)
-        if m_dates and current:
-            current["From"], current["To"] = m_dates.group(1), m_dates.group(2)
-            continue
-
-        # Reason for leaving
-        rm = re.search(r"Reason\s*for\s*leaving\s*[:\-]\s*(.+)", l, re.IGNORECASE)
-        if rm and current:
-            current["Reason_For_Leaving"] = rm.group(1).strip()
-            continue
-
-        # Description / bullets
-        if current:
-            desc = re.sub(r"^[\-\.\*•●·]\s*", "", l).strip()
-            if desc:
-                if current["Description"]:
-                    current["Description"] += " " + desc
-                else:
-                    current["Description"] = desc
-
+        else:
+            if current:
+                desc = re.sub(r"^[\-\.\*•●·]\s*", "", line).strip()
+                if desc:
+                    current["Description"] += (" " if current["Description"] else "") + desc
     if current:
         entries.append(current)
     return entries
@@ -174,11 +142,12 @@ async def upload_resume(resume: UploadFile = File(...)):
         doc = docx.Document(resume.file)
         text = "\n".join(p.text for p in doc.paragraphs)
     else:
-        return {"Name": "", "Email": "", "Mobile": "", "Date_of_Birth": "", "Gender": "", "Language": "", "Nationality": "", "NoticePeriod": "", "Race": "", "Skills": "", "Education": [], "WorkExperience": []}
+        text = (await resume.read()).decode("utf-8", errors="ignore")
 
     text = clean_text(text)
-    education = extract_education(text)
-    work_experience = extract_work_experience(text)
+    lines = split_lines(text)
+    education = extract_education(lines)
+    work_experience = extract_work_experience(lines)
 
     return {
         "Name": extract_name(text),
